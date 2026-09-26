@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="el">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Bet Analyzer</title>
+<style>
+  :root{
+    --bg:#f7f7f8; --panel:#ffffff; --border:#dcdce0; --text:#1f1f24;
+    --accent:#2f6fed; --accent-text:#ffffff; --mono:#111;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --bg:#16161a; --panel:#1f1f24; --border:#33333a; --text:#eaeaef;
+      --accent:#4d84f5; --accent-text:#0b0b0d; --mono:#eaeaef;
+    }
+  }
+  *{box-sizing:border-box;}
+  html,body{height:100%;}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    padding:16px; padding-top:calc(16px + env(safe-area-inset-top,0px));
+    padding-bottom:calc(16px + env(safe-area-inset-bottom,0px));
+  }
+  h1{font-size:1.15rem; margin:0 0 14px;}
+  .section{
+    background:var(--panel); border:1px solid var(--border); border-radius:10px;
+    padding:14px; margin-bottom:14px;
+  }
+  label{display:block; font-weight:600; margin-bottom:6px; font-size:0.9rem;}
+  textarea{
+    width:100%; min-height:150px; resize:vertical;
+    font-family:ui-monospace,Menlo,Consolas,monospace; font-size:0.82rem;
+    background:var(--bg); color:var(--mono); border:1px solid var(--border);
+    border-radius:8px; padding:8px; overflow-x:auto; white-space:pre;
+  }
+  button{
+    margin-top:10px; padding:8px 16px; border:none; border-radius:8px;
+    background:var(--accent); color:var(--accent-text); font-weight:600;
+    cursor:pointer; font-size:0.9rem;
+  }
+  button:active{opacity:0.85;}
+  #output{min-height:120px; margin-top:6px;}
+  .hint{font-size:0.78rem; opacity:0.7; margin-top:4px;}
+</style>
+</head>
+<body>
+<h1>Bet Analyzer</h1>
+
+<div class="section">
+  <label for="ta160">1.60</label>
+  <textarea id="ta160" placeholder="Επικόλληση δεδομένων (τύπος: 1.60)..."></textarea>
+  <button id="btn160">Analyze</button>
+  <div class="hint">Στήλη αποτελέσματος: προτελευταία (1 / Χ / 2)</div>
+</div>
+
+<div class="section">
+  <label for="ta190">1.90/1.20</label>
+  <textarea id="ta190" placeholder="Επικόλληση δεδομένων (τύπος: 1.90/1.20)..."></textarea>
+  <button id="btn190">Analyze</button>
+  <div class="hint">Στήλη αποτελέσματος: πριν τις 3 τελικές τιμές κλεισίματος (1 / 0 / -1)</div>
+</div>
+
+<div class="section">
+  <label for="output">Αποτέλεσμα</label>
+  <textarea id="output" readonly></textarea>
+</div>
+
+<script>
+function parseRows(text){
+  return text.split('\n')
+    .map(l=>l.trim())
+    .filter(l=>l.length>0)
+    .map(l=>{
+      let parts = l.split('\t').map(s=>s.trim()).filter(s=>s.length>0 || true);
+      // remove stray empty strings that come from double tabs, but keep structure sane
+      parts = parts.filter(s=>s!=='');
+      if(parts.length <= 2){
+        parts = l.split(/\s+/).map(s=>s.trim()).filter(s=>s.length>0);
+      }
+      return parts;
+    });
+}
+
+function num(v){
+  if(v===undefined) return NaN;
+  return parseFloat(String(v).replace(',', '.'));
+}
+
+function pickMajorityDate(rows, dateIdx){
+  const counts = {};
+  rows.forEach(r=>{
+    const d = r[dateIdx];
+    counts[d] = (counts[d]||0) + 1;
+  });
+  let best=null, bestCount=-1;
+  rows.forEach(r=>{
+    const d = r[dateIdx];
+    if(counts[d] > bestCount){ bestCount = counts[d]; best = d; }
+  });
+  return best;
+}
+
+function getOutcome(raw, type){
+  const v = String(raw).trim();
+  if(type === 'code'){
+    const n = num(v);
+    if(n === 1) return 'A';
+    if(n === 0) return 'X';
+    if(n === -1) return 'D';
+    return null;
+  } else {
+    const u = v.toUpperCase();
+    if(u === '1') return 'A';
+    if(u === '2') return 'D';
+    if(u === 'Χ' || u === 'X') return 'X'; // Greek Chi or Latin X
+    return null;
+  }
+}
+
+function round2(v){
+  if(!isFinite(v)) return v;
+  return Math.round(v*1000)/1000;
+}
+
+// resultOffsetFromEnd: how many fields from the end (after dropping id col) the result sits
+// resultType: 'code' (1/0/-1) or 'symbol' (1/Χ/2)
+function analyze(text, resultOffsetFromEnd, resultType, label){
+  let rows = parseRows(text);
+  if(rows.length === 0) return '['+label+'] Δεν βρέθηκαν δεδομένα.';
+
+  // drop first column (game id)
+  rows = rows.map(r => r.slice(1));
+
+  const dayIdx = 0, dateIdx = 1;
+  const majorityDate = pickMajorityDate(rows, dateIdx);
+  const filtered = rows.filter(r => r[dateIdx] === majorityDate);
+  if(filtered.length === 0) return '['+label+'] Δεν βρέθηκαν αγώνες για την πλειοψηφική ημερομηνία.';
+
+  const day = filtered[0][dayIdx];
+  const N = filtered.length;
+
+  const oddsA=[], oddsX=[], oddsD=[];
+  const winA=[], winX=[], winD=[];
+
+  filtered.forEach(r=>{
+    const a = num(r[5]);
+    const x = num(r[6]);
+    const d = num(r[7]);
+    oddsA.push(a); oddsX.push(x); oddsD.push(d);
+
+    const resIdx = r.length - resultOffsetFromEnd;
+    const outcome = getOutcome(r[resIdx], resultType);
+    if(outcome === 'A') winA.push(a);
+    else if(outcome === 'X') winX.push(x);
+    else if(outcome === 'D') winD.push(d);
+  });
+
+  const avg = arr => arr.reduce((s,v)=>s+v,0) / arr.length;
+  const sum = arr => arr.reduce((s,v)=>s+v,0);
+  const prod = arr => arr.reduce((s,v)=>s*v,1);
+
+  const avgA = avg(oddsA), avgX = avg(oddsX), avgD = avg(oddsD);
+
+  const vbA = sum(winA) - N, pvbA = vbA / N;
+  const vbX = sum(winX) - N, pvbX = vbX / N;
+  const vbD = sum(winD) - N, pvbD = vbD / N;
+
+  // Combo (accumulator) bet: only pays out if ALL games in the set had that
+  // exact outcome. If even one game didn't, the whole combo is a loss (-1).
+  const cbA = (winA.length === N) ? (prod(oddsA) - 1) : -1;
+  const cbX = (winX.length === N) ? (prod(oddsX) - 1) : -1;
+  const cbD = (winD.length === N) ? (prod(oddsD) - 1) : -1;
+  const pcbA = cbA, pcbX = cbX, pcbD = cbD; // stake is 1 unit, so % = value itself
+
+  const fields = [
+    day, majorityDate, N,
+    Math.round(avgA*100)/100, Math.round(avgX*100)/100, Math.round(avgD*100)/100,
+    round2(vbA), round2(pvbA), round2(vbX), round2(pvbX), round2(vbD), round2(pvbD),
+    round2(cbA), round2(pcbA), round2(cbX), round2(pcbX), round2(cbD), round2(pcbD),
+    0, 0, 0
+  ];
+  return fields.join('\t');
+}
+
+function appendOutput(line){
+  const out = document.getElementById('output');
+  out.value = (out.value ? out.value + '\n' : '') + line;
+}
+
+document.getElementById('btn160').addEventListener('click', ()=>{
+  try{
+    const text = document.getElementById('ta160').value;
+    appendOutput(analyze(text, 2, 'symbol', '1.60'));
+  }catch(e){
+    appendOutput('[1.60] Σφάλμα: ' + e.message);
+  }
+});
+
+document.getElementById('btn190').addEventListener('click', ()=>{
+  try{
+    const text = document.getElementById('ta190').value;
+    appendOutput(analyze(text, 4, 'code', '1.90/1.20'));
+  }catch(e){
+    appendOutput('[1.90/1.20] Σφάλμα: ' + e.message);
+  }
+});
+</script>
+</body>
+</html>
